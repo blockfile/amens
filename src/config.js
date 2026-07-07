@@ -75,19 +75,23 @@ const config = {
   jupiterApiKey: process.env.JUPITER_API_KEY || null,
   jupiterPriorityFeeLamports: num(process.env.JUPITER_PRIORITY_FEE_LAMPORTS, 1000000),
 
-  // Schedule — a cycle runs on this timer (default every 5 minutes) and claims
-  // whatever creator fees have accrued; it skips silently when the vault is empty.
-  pollSchedule: process.env.POLL_SCHEDULE || '*/5 * * * *',
-  // DRY_RUN only: simulated SOL accrued to the fee vault per tick.
-  dryRunFeePerPoll: num(process.env.DRY_RUN_FEE_PER_POLL, 0.4),
+  // Schedule — a tick runs on this timer (default every minute): scan the wallet
+  // for the dev's manual claim/buy/send/burn transactions and record them.
+  pollSchedule: process.env.POLL_SCHEDULE || '* * * * *',
+  // DRY_RUN only: simulated manual activity per tick (so cycles have content).
+  dryRunFeePerPoll: num(process.env.DRY_RUN_FEE_PER_POLL, 0.4), // simulated manual claim, SOL
+  dryRunTokensPerPoll: num(process.env.DRY_RUN_TOKENS_PER_POLL, 100000), // simulated manual buy, tokens
 
-  // The AMENS flywheel. Each claim: BUYBACK_PCT% of the SOL buys back $AMENS;
-  // of the tokens bought, ANSEM_PCT% goes to REWARD_WALLET (the Ansem wallet)
-  // and BURN_PCT% is burned on-chain. Everything else (25% of the SOL and 25%
-  // of the tokens) stays in the operating wallet (marketing + tx fees).
+  // Watcher — max transactions fetched+parsed per tick.
+  watchMaxTxPerScan: num(process.env.WATCH_MAX_TX_PER_SCAN, 50),
+
+  // The AMENS tokenomics story (the DEV executes it manually; the bot only
+  // watches and records): BUYBACK_PCT% of each claim buys back $AMENS; of the
+  // tokens bought, ANSEM_PCT% goes to REWARD_WALLET (the Ansem wallet) and
+  // BURN_PCT% is burned. Used for the status display + dry-run simulation.
   buybackPct: num(process.env.BUYBACK_PCT, 75), // % of claim → buy back $AMENS
-  ansemPct: num(process.env.ANSEM_PCT, 70), // % of BOUGHT TOKENS → Ansem
-  burnPct: num(process.env.BURN_PCT, 5), // % of BOUGHT TOKENS → burned
+  ansemPct: num(process.env.ANSEM_PCT, 70), // % of bought tokens → Ansem
+  burnPct: num(process.env.BURN_PCT, 5), // % of bought tokens → burned
   rewardWallet: process.env.REWARD_WALLET || 'GV6UUmNxz2RpKxmNAPadYKb7uQpszwqQAu3qLJxVdC52', // the Ansem wallet
   airdropBatchSize: num(process.env.AIRDROP_BATCH_SIZE, 8),
 

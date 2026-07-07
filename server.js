@@ -36,7 +36,7 @@ app.get('/', (req, res) => {
   res.json({
     name: 'amens',
     description:
-      'pump.fun creator fees → 75% buys back $AMENS → 70% of tokens to the Ansem wallet, 5% burned (every 5 minutes)',
+      'the dev manually claims fees, buys back $AMENS, sends to the Ansem wallet, and burns — the bot watches the wallet and records every move for the frontend (every minute)',
     dryRun: config.dryRun,
     wallet: walletPubkey(),
     endpoints: [

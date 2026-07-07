@@ -73,9 +73,9 @@ test('toPublicSummary marketCapUsd defaults to null when not provided', () => {
   assert.strictEqual(out.marketCapUsd, null);
 });
 
-test('activity rows: auto-claim label, amountTokens for buy/airdrop/burn', () => {
+test('activity rows: claim label, amountTokens for buy/airdrop/burn', () => {
   const claim = toActivityRow({ name: 'claim', status: 'ok', detail: { solClaimed: 0.4 }, created_at: '2026-07-05T00:00:00Z' }, 150);
-  assert.strictEqual(claim.type, 'Auto Claim'); // the bot claims by itself
+  assert.strictEqual(claim.type, 'Claim'); // detected manual claim
 
   const burnRow = toActivityRow({ name: 'burn', status: 'ok', detail: { tokensBurned: 5000 }, created_at: '2026-07-05T00:00:00Z' }, 150);
   assert.strictEqual(burnRow.type, 'Burn');

@@ -2,80 +2,88 @@
 
 const config = require('../config');
 const repo = require('../db/repository');
-const { claimCreatorFees, buyToken } = require('../solana/pumpfun');
-const { airdropToken } = require('../solana/airdrop');
-const { burnToken } = require('../solana/burn');
 
 /**
- * One AMENS cycle (fired by the scheduler on a fixed timer, default every
- * 5 minutes — skipped upstream when nothing is claimable):
- *   claim $AMENS creator fees (once)
- *   buy back $AMENS with BUYBACK_PCT% (75%) of the claim
- *   of the tokens bought THIS cycle:
- *     ANSEM_PCT% (70%) → REWARD_WALLET (the Ansem wallet)
- *     BURN_PCT%  (5%)  → burned on-chain (supply reduction)
- *     the rest (25%)   → stays in the operating wallet
- *   the unspent 25% of the claimed SOL also stays (marketing + tx fees)
+ * One record-only cycle. The bot does NOTHING on-chain — the dev manually
+ * claims creator fees, buys $AMENS, sends to the Ansem wallet, and burns.
+ * The watcher detects those transactions and this cycle records them to Mongo
+ * (steps + airdrops rows) so the frontend can display everything.
  *
- * Safety rule: only what was bought this cycle (buy.tokensBoughtRaw) is ever
- * sent or burned — never the operating wallet's pre-existing token balance.
+ * @param {Array} events detected events from watcher.scan()
+ * @returns cycle row with steps, or { skipped: true } when there is nothing
+ *          new to record (no cycle row is written).
  */
-async function runCycle() {
+async function runCycle(events = []) {
+  // Dedupe by on-chain signature so a crash-and-rescan can't double-record.
+  const seen = new Set();
+  const fresh = [];
+  for (const e of events) {
+    if (e.signature && !seen.has(e.signature) && (await repo.hasStepSignature(e.signature))) {
+      seen.add(e.signature);
+    }
+    if (e.signature && seen.has(e.signature)) continue;
+    fresh.push(e);
+  }
+  if (fresh.length === 0) return { skipped: true, reason: 'nothing new to record' };
+
   const id = await repo.createCycle({ dryRun: config.dryRun });
   const log = (m) => console.log(`[cycle ${id}] ${m}`);
   try {
-    const claim = await claimCreatorFees();
-    await repo.addStep({ cycleId: id, name: 'claim', status: 'ok', signature: claim.signature, detail: { solClaimed: claim.solClaimed } });
-    log(`claimed ${claim.solClaimed} SOL`);
-    if (!(claim.solClaimed > 0)) {
-      await repo.finishCycle(id, { status: 'skipped', sol_claimed: claim.solClaimed, note: 'nothing claimed' });
-      return repo.getCycleWithSteps(id);
-    }
-    if (!config.tokenMint || !config.rewardWallet) {
-      throw new Error('TOKEN_MINT ($AMENS) and REWARD_WALLET are required');
-    }
+    let solClaimed = 0;
+    let tokensBought = 0;
+    let tokensBurned = 0;
+    let tokensSent = 0;
 
-    const buySol = +(claim.solClaimed * (config.buybackPct / 100)).toFixed(6);
-
-    const buy = await buyToken(config.tokenMint, buySol);
-    await repo.addStep({ cycleId: id, name: 'buy', status: 'ok', signature: buy.signature, detail: { leg: 'buyback', buyMint: config.tokenMint, solSpent: buySol, tokensBought: buy.tokensBought } });
-    log(`bought back ${buy.tokensBought} AMENS with ${buySol} SOL`);
-
-    let sentUi = 0;
-    let burnedUi = 0;
-    const boughtRaw = BigInt(buy.tokensBoughtRaw || '0');
-    if (boughtRaw > 0n) {
-      const decimals = buy.baseDecimals ?? 6;
-      const uiOf = (raw) => Number(raw) / 10 ** decimals;
-
-      // Integer shares of THIS cycle's buy: 70% → Ansem, 5% → burn, rest stays.
-      const ansemRaw = (boughtRaw * BigInt(Math.round(config.ansemPct))) / 100n;
-      const burnRaw = (boughtRaw * BigInt(Math.round(config.burnPct))) / 100n;
-
-      if (ansemRaw > 0n) {
-        const allocations = [{ owner: config.rewardWallet, amountRaw: ansemRaw.toString() }];
-        const result = await airdropToken({ rewardMint: config.tokenMint, allocations, cycleId: id });
-        sentUi = uiOf(ansemRaw);
-        await repo.addStep({ cycleId: id, name: 'airdrop', status: result.failed ? 'failed' : 'ok', detail: { leg: 'buyback', rewardMint: config.tokenMint, recipients: 1, sent: result.sent, failed: result.failed, tokensSent: sentUi } });
-        log(`sent ${sentUi} (${config.ansemPct}%) to ${config.rewardWallet} (sent=${result.sent} failed=${result.failed})`);
-      }
-
-      if (burnRaw > 0n) {
-        const burn = await burnToken(config.tokenMint, burnRaw.toString());
-        burnedUi = uiOf(burnRaw);
-        await repo.addStep({ cycleId: id, name: 'burn', status: 'ok', signature: burn.signature, detail: { burnMint: config.tokenMint, tokensBurned: burnedUi, burnedRaw: burn.burnedRaw } });
-        log(`burned ${burnedUi} (${config.burnPct}%)`);
+    for (const e of fresh) {
+      if (e.type === 'claim') {
+        solClaimed += e.solClaimed;
+        await repo.addStep({
+          cycleId: id, name: 'claim', status: 'ok', signature: e.signature,
+          detail: { solClaimed: e.solClaimed, source: 'detected' },
+        });
+        log(`detected manual claim of ${e.solClaimed} SOL (${e.signature})`);
+      } else if (e.type === 'buy') {
+        tokensBought += e.tokensBought;
+        await repo.addStep({
+          cycleId: id, name: 'buy', status: 'ok', signature: e.signature,
+          detail: { leg: 'buyback', buyMint: config.tokenMint, solSpent: e.solSpent, tokensBought: e.tokensBought, source: 'detected' },
+        });
+        log(`detected manual buy of ${e.tokensBought} tokens (${e.signature})`);
+      } else if (e.type === 'airdrop') {
+        tokensSent += e.tokensSent;
+        await repo.addStep({
+          cycleId: id, name: 'airdrop', status: 'ok', signature: e.signature,
+          detail: { leg: 'buyback', rewardMint: config.tokenMint, recipients: 1, sent: 1, failed: 0, tokensSent: e.tokensSent, source: 'detected' },
+        });
+        // Also feed the airdrops collection — powers GET /airdrops and the
+        // summary's buybackDistributed total.
+        await repo.addAirdrop({
+          cycleId: id,
+          rewardMint: config.tokenMint,
+          recipient: config.rewardWallet,
+          amountRaw: e.tokensSentRaw ?? '0',
+          amountUi: e.tokensSent,
+          signature: e.signature,
+          status: 'ok',
+        });
+        log(`detected manual send of ${e.tokensSent} to Ansem (${e.signature})`);
+      } else if (e.type === 'burn') {
+        tokensBurned += e.tokensBurned;
+        await repo.addStep({
+          cycleId: id, name: 'burn', status: 'ok', signature: e.signature,
+          detail: { burnMint: config.tokenMint, tokensBurned: e.tokensBurned, burnedRaw: e.tokensBurnedRaw ?? null, source: 'detected' },
+        });
+        log(`detected manual burn of ${e.tokensBurned} (${e.signature})`);
       }
     }
 
     await repo.finishCycle(id, {
       status: 'complete',
-      mode: 'buyback',
-      sol_claimed: claim.solClaimed,
-      sol_spent_buy: buySol,
-      tokens_bought: buy.tokensBought,
-      tokens_burned: burnedUi,
-      note: `sent ${sentUi}, burned ${burnedUi}`,
+      mode: 'manual',
+      sol_claimed: solClaimed,
+      tokens_bought: tokensBought,
+      tokens_burned: tokensBurned,
+      note: `recorded ${fresh.length} manual event(s); sent ${tokensSent}, burned ${tokensBurned}`,
     });
     return repo.getCycleWithSteps(id);
   } catch (err) {

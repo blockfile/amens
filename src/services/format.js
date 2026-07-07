@@ -15,7 +15,7 @@ function toActivityRow(s, price) {
 
   switch (s.name) {
     case 'claim':
-      type = 'Auto Claim';
+      type = 'Claim'; // detected manual claim
       amountSol = d.solClaimed ?? null;
       status = 'Claimed';
       break;

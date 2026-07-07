@@ -228,6 +228,26 @@ async function getAirdropTotals() {
   return byMint;
 }
 
+// ── meta: tiny key-value store (watcher cursor, etc.) ───────────────────────
+async function getMeta(key) {
+  const db = getDb();
+  const doc = await db.collection('meta').findOne({ _id: key });
+  return doc ? doc.value : null;
+}
+
+async function setMeta(key, value) {
+  const db = getDb();
+  await db.collection('meta').updateOne({ _id: key }, { $set: { value } }, { upsert: true });
+}
+
+/** True if a step already recorded this on-chain signature (rescan dedupe). */
+async function hasStepSignature(signature) {
+  if (!signature) return false;
+  const db = getDb();
+  const hit = await db.collection('steps').findOne({ signature }, { projection: { _id: 1 } });
+  return Boolean(hit);
+}
+
 module.exports = {
   createCycle,
   finishCycle,
@@ -240,4 +260,7 @@ module.exports = {
   addAirdrop,
   getAirdrops,
   getAirdropTotals,
+  getMeta,
+  setMeta,
+  hasStepSignature,
 };

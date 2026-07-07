@@ -3,7 +3,7 @@
 const cron = require('node-cron');
 const config = require('../config');
 const { runCycle } = require('./cycle');
-const { getClaimableSol, simulateFeeAccrual } = require('../solana/pumpfun');
+const watcher = require('../solana/watcher');
 const bus = require('../events');
 
 const state = {
@@ -12,38 +12,42 @@ const state = {
   isRunning: false,
   lastRunAt: null,
   lastResult: null, // { id, status }
-  lastClaimable: null,
+  lastDetected: null, // events found by the last scan
   startedAt: null,
 };
 
 /**
- * One timer tick (every POLL_SCHEDULE, default 5 minutes). Advances the
- * simulated vault (DRY_RUN only), reads the claimable creator-fee balance, and
- * runs a cycle claiming WHATEVER has accrued. Skips silently (no cycle row)
- * when the vault is empty. Overlap-guarded.
+ * One timer tick (every POLL_SCHEDULE, default 1 minute): scan the wallet for
+ * the dev's manual claim / buy / send-to-Ansem / burn transactions and record
+ * them for the frontend. The bot never touches the chain — it only reads.
+ * Skips silently (no cycle row) when there is nothing new. Overlap-guarded;
+ * 'manual' bypasses pause.
  * @param {string} trigger 'poll' | 'manual'
- * @returns {Promise<{ran:boolean, claimable?:number, reason?:string, cycle?:object}>}
+ * @returns {Promise<{ran:boolean, detected?:number, reason?:string, cycle?:object}>}
  */
 async function pollOnce(trigger) {
-  if (state.paused) return { ran: false, reason: 'paused' };
+  if (trigger !== 'manual' && state.paused) return { ran: false, reason: 'paused' };
   if (state.isRunning) {
     console.log(`[scheduler] ${trigger} tick ignored — a cycle is already running`);
     return { ran: false, reason: 'cycle already running' };
   }
 
-  simulateFeeAccrual(); // no-op in live mode
-  const claimable = await getClaimableSol();
-  state.lastClaimable = claimable;
-  if (!(claimable > 0)) {
-    return { ran: false, claimable, reason: 'nothing claimable' };
-  }
-
   state.isRunning = true;
-  state.lastRunAt = new Date().toISOString();
   try {
-    const cycle = await runCycle();
+    const { events, cursor } = await watcher.scan();
+    state.lastDetected = events.length;
+
+    if (events.length === 0) {
+      await watcher.commitCursor(cursor); // still advance past irrelevant txs
+      return { ran: false, detected: 0, reason: 'nothing new to record' };
+    }
+
+    state.lastRunAt = new Date().toISOString();
+    const cycle = await runCycle(events);
+    await watcher.commitCursor(cursor); // AFTER recording — dedupe covers the gap
+    if (cycle.skipped) return { ran: false, detected: events.length, reason: cycle.reason };
     state.lastResult = { id: cycle.id, status: cycle.status };
-    return { ran: true, claimable, cycle };
+    return { ran: true, detected: events.length, cycle };
   } finally {
     state.isRunning = false;
   }
@@ -59,7 +63,7 @@ function start() {
     pollOnce('poll').catch((err) => console.error('[scheduler] poll error:', err));
   });
   console.log(
-    `[scheduler] started — claims on schedule "${config.pollSchedule}" (dryRun=${config.dryRun})`
+    `[scheduler] started — watching on schedule "${config.pollSchedule}" (dryRun=${config.dryRun})`
   );
 }
 
@@ -77,18 +81,11 @@ function resume() {
   return s;
 }
 
-/** Manual trigger from the API — forces a cycle immediately, off-schedule. */
+/** Manual trigger from the API — forces a tick immediately, even while paused. */
 async function triggerNow() {
-  if (state.isRunning) return { skipped: true, reason: 'cycle already running' };
-  state.isRunning = true;
-  state.lastRunAt = new Date().toISOString();
-  try {
-    const cycle = await runCycle();
-    state.lastResult = { id: cycle.id, status: cycle.status };
-    return cycle;
-  } finally {
-    state.isRunning = false;
-  }
+  const result = await pollOnce('manual');
+  if (!result.ran) return { skipped: true, reason: result.reason };
+  return result.cycle;
 }
 
 function getState() {
@@ -98,7 +95,7 @@ function getState() {
     isRunning: state.isRunning,
     lastRunAt: state.lastRunAt,
     lastResult: state.lastResult,
-    lastClaimable: state.lastClaimable,
+    lastDetected: state.lastDetected,
     startedAt: state.startedAt,
   };
 }

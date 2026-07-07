@@ -2,14 +2,16 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-test('config exposes the AMENS flywheel defaults', () => {
+test('config exposes the AMENS watcher defaults', () => {
   const config = require('./config');
-  assert.strictEqual(config.buybackPct, 75); // % of claim → buy back $AMENS
-  assert.strictEqual(config.ansemPct, 70); // % of bought tokens → Ansem
-  assert.strictEqual(config.burnPct, 5); // % of bought tokens → burned
+  assert.strictEqual(config.buybackPct, 75); // % of claim → buy back $AMENS (dev, manual)
+  assert.strictEqual(config.ansemPct, 70); // % of bought tokens → Ansem (dev, manual)
+  assert.strictEqual(config.burnPct, 5); // % of bought tokens → burned (dev, manual)
   assert.strictEqual(config.rewardWallet, 'GV6UUmNxz2RpKxmNAPadYKb7uQpszwqQAu3qLJxVdC52');
-  assert.strictEqual(config.pollSchedule, '*/5 * * * *'); // every 5 minutes
+  assert.strictEqual(config.pollSchedule, '* * * * *'); // scan every minute
+  assert.strictEqual(config.watchMaxTxPerScan, 50);
   assert.strictEqual(config.dryRunFeePerPoll, 0.4);
+  assert.strictEqual(config.dryRunTokensPerPoll, 100000);
   assert.strictEqual(config.airdropBatchSize, 8);
   assert.strictEqual(config.mongoDb, 'amens');
 });
